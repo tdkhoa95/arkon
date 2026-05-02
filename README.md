@@ -1,4 +1,4 @@
-![Arkon Banner](blob/assets/banner.png)
+![Arkon Banner](docs/assets/banner.png)
 
 # Arkon
 
