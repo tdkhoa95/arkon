@@ -63,7 +63,7 @@ Role-based access control at department + workspace level.
 </p>
 
 ### 🔌 MCP Server for Claude & Other AI Clients
-Employees connect Claude Desktop (or any MCP-compatible client) to Arkon with a personal token. The MCP server exposes:
+Employees connect Claude Desktop or Claude.ai to Arkon via **OAuth 2.1 + PKCE** — just add the server URL and sign in through the browser. No manual token copying required. The MCP server exposes:
 - **Wiki tools** - `search_wiki`, `read_wiki_page`, `list_wiki_pages`, `read_wiki_index`.
 - **Source drill-down** - `get_source`, `get_source_outline`, `get_source_pages`, `list_sources`.
 - **Edit workflow** - `propose_wiki_edit`, `edit_wiki_page`, `list_pending_drafts`, `review_draft`, `approve_draft`, `reject_draft`.
