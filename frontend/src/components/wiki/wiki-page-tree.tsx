@@ -163,6 +163,9 @@ export function WikiPageTree({
     const map = new Map<string, ScopeBucket>();
     for (const p of filtered) {
       if (p.page_type === "index" || p.page_type === "log") continue;
+      // Workspaces (project scope) are reached via /workspaces — keep the
+      // /wiki tree focused on enterprise-wide knowledge (global + departments).
+      if ((p.scope_type || "global") === "project") continue;
       const k = scopeGroupKey(p);
       let bucket = map.get(k);
       if (!bucket) {
