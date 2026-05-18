@@ -12,6 +12,8 @@ import { WikiEditor } from "@/components/wiki/wiki-editor";
 import { WikiDraftBanner } from "@/components/wiki/wiki-draft-banner";
 import { wikiTypeGroupLabel } from "@/components/wiki/wiki-type-badge";
 import { WikiSearchDialog } from "@/components/wiki/wiki-search-dialog";
+import { WikiScopeSwitcher } from "@/components/wiki/wiki-scope-switcher";
+import { WikiScope } from "@/types/wiki";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
@@ -56,6 +58,25 @@ export default function WikiPageViewer() {
   const scopeLinkSuffix = isScoped
     ? `?scopeType=${scopeType}&scopeId=${scopeId}`
     : "";
+
+  // Look up the display name for the current page's scope so the scope
+  // switcher trigger reads e.g. "Phòng Nhân sự" rather than just "department".
+  const [scopes, setScopes] = React.useState<WikiScope[]>([]);
+  React.useEffect(() => {
+    api<WikiScope[]>("/api/wiki/my-scopes")
+      .then((s) => setScopes(Array.isArray(s) ? s : []))
+      .catch(() => setScopes([]));
+  }, []);
+  const currentScope: WikiScope = React.useMemo(() => {
+    if (isScoped && scopeType && scopeId) {
+      const match = scopes.find(
+        (s) => s.scope_type === scopeType && s.scope_id === scopeId,
+      );
+      if (match) return match;
+      return { scope_type: scopeType, scope_id: scopeId, name: scopeType };
+    }
+    return { scope_type: "global", scope_id: null, name: "Global" };
+  }, [isScoped, scopeType, scopeId, scopes]);
 
   const [page, setPage] = React.useState<WikiPageDetail | null>(null);
   const [notFound, setNotFound] = React.useState(false);
@@ -195,6 +216,7 @@ export default function WikiPageViewer() {
         description="Compiled knowledge from your organization's documents."
         action={
           <div className="flex items-center gap-2">
+            <WikiScopeSwitcher current={currentScope} />
             <Button
               variant="outline"
               onClick={() => setSearchOpen(true)}
@@ -218,10 +240,9 @@ export default function WikiPageViewer() {
       />
 
       <div className="flex-1 flex gap-0 -mx-6 md:-mx-8 lg:-mx-10 -mb-6 md:-mb-8 lg:-mb-10 min-h-0 border-t border-border overflow-hidden">
-        {/* Left: Page Tree — always render scope-grouped so the detail-page
-            sidebar matches /wiki. For scoped pages we still filter pagesUrl to
-            that scope so the tree stays focused; the active scope bucket
-            auto-expands. */}
+        {/* Left: Page Tree — same scope-grouped layout as /wiki. We do NOT
+            filter pagesUrl by scope so the sidebar is identical across all
+            wiki pages; the active page's scope bucket auto-expands. */}
         <WikiPageTree
           activeSlug={fullSlug}
           groupByScope
@@ -229,12 +250,6 @@ export default function WikiPageViewer() {
             scope_type: scopeType ?? "global",
             scope_id: scopeId ?? null,
           }}
-          pagesUrl={
-            isScoped
-              ? `/api/wiki/pages?scope_type=${scopeType}&scope_id=${scopeId}&limit=200`
-              : undefined
-          }
-          linkQueryParams={isScoped ? `?scopeType=${scopeType}&scopeId=${scopeId}` : undefined}
         />
 
         {/* Center: Content */}

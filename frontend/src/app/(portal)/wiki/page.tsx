@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { WikiPageSummary, WikiScope } from "@/types/wiki";
 import { PageHeader } from "@/components/shared/page-header";
@@ -12,29 +12,12 @@ import { WikiContent } from "@/components/wiki/wiki-content";
 import { WikiTypeBadge, wikiTypeGroupLabel } from "@/components/wiki/wiki-type-badge";
 import { ScopeBadge } from "@/components/shared/scope-badge";
 import { WikiSearchDialog } from "@/components/wiki/wiki-search-dialog";
+import { WikiScopeSwitcher } from "@/components/wiki/wiki-scope-switcher";
 import { EmptyState } from "@/components/shared/empty-state";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 const TYPE_TABS = ["all", "entity", "concept", "topic", "source"] as const;
 
-// Icon shown for each scope_type in the switcher trigger / dropdown.
-const SCOPE_ICONS: Record<string, string> = {
-  global: "public",
-  department: "corporate_fare",
-  project: "folder_special",
-};
-
-function scopeKey(s: { scope_type: string; scope_id: string | null }): string {
-  return s.scope_id ? `${s.scope_type}:${s.scope_id}` : s.scope_type;
-}
-
 export default function WikiIndexPage() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const urlScopeType = searchParams.get("scope_type");
   const urlScopeId = searchParams.get("scope_id");
@@ -54,27 +37,14 @@ export default function WikiIndexPage() {
         (s) => s.scope_type === urlScopeType && (s.scope_id ?? null) === (urlScopeId ?? null),
       );
       if (match) return match;
-      // URL points to a scope we don't have a name for yet — render with a
-      // placeholder name; the actual content fetches still work by ID.
       return { scope_type: urlScopeType, scope_id: urlScopeId, name: urlScopeType };
     }
     return { scope_type: "global", scope_id: null, name: "Global" };
   }, [urlScopeType, urlScopeId, scopes]);
 
-  const setSelectedScope = React.useCallback(
-    (s: WikiScope) => {
-      const params = new URLSearchParams();
-      if (s.scope_type !== "global") {
-        params.set("scope_type", s.scope_type);
-        if (s.scope_id) params.set("scope_id", s.scope_id);
-      }
-      const qs = params.toString();
-      router.replace(qs ? `/wiki?${qs}` : "/wiki");
-    },
-    [router],
-  );
-
-  // Fetch available scopes once
+  // Fetch available scopes once so we can resolve the display name for the URL
+  // scope. The switcher fetches its own copy — caching could optimise this but
+  // /api/wiki/my-scopes is tiny.
   React.useEffect(() => {
     api<WikiScope[]>("/api/wiki/my-scopes")
       .then((s) => setScopes(Array.isArray(s) ? s : []))
@@ -140,51 +110,7 @@ export default function WikiIndexPage() {
         description="Compiled knowledge from your organization's documents."
         action={
           <div className="flex items-center gap-2">
-            {scopes.length > 1 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium text-foreground transition-colors">
-                  <span
-                    className="material-symbols-outlined text-base text-muted-foreground"
-                    style={{ fontSize: 16 }}
-                  >
-                    {SCOPE_ICONS[selectedScope.scope_type] ?? "tune"}
-                  </span>
-                  <span className="max-w-[160px] truncate">{selectedScope.name}</span>
-                  <span className="material-symbols-outlined text-base text-muted-foreground">
-                    expand_more
-                  </span>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[220px]">
-                  {scopes.map((s) => {
-                    const k = scopeKey(s);
-                    const active = k === scopeKey(selectedScope);
-                    return (
-                      <DropdownMenuItem
-                        key={k}
-                        onClick={() => setSelectedScope(s)}
-                        className={active ? "bg-accent/60" : ""}
-                      >
-                        <span
-                          className="material-symbols-outlined text-base mr-2 text-muted-foreground"
-                          style={{ fontSize: 16 }}
-                        >
-                          {SCOPE_ICONS[s.scope_type] ?? "tune"}
-                        </span>
-                        <span className="flex-1 truncate">{s.name}</span>
-                        {active && (
-                          <span
-                            className="material-symbols-outlined text-base ml-2 text-primary"
-                            style={{ fontSize: 16 }}
-                          >
-                            check
-                          </span>
-                        )}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
+            <WikiScopeSwitcher current={selectedScope} />
             <Button
               variant="outline"
               onClick={() => setSearchOpen(true)}

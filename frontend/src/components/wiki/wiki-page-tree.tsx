@@ -208,17 +208,31 @@ export function WikiPageTree({
   React.useEffect(() => {
     // When scope buckets first arrive, ensure global stays expanded and any
     // bucket containing the active page (or matching activeScope) is expanded.
+    // Also pre-expand the type subgroups *inside* every expanded bucket so the
+    // tree looks "open" by default — otherwise users navigating from /wiki to a
+    // detail page see all the scope+type subgroups collapsed.
     if (!groupByScope || scopeGrouped.length === 0) return;
+
+    const scopesToExpand = new Set<string>(["global"]);
+    if (activeScopeKey) scopesToExpand.add(activeScopeKey);
+    if (activeSlug) {
+      for (const b of scopeGrouped) {
+        for (const ps of b.byType.values()) {
+          if (ps.some((p) => p.slug === activeSlug)) scopesToExpand.add(b.key);
+        }
+      }
+    }
+
     setExpandedScopes((prev) => {
       const next = new Set(prev);
-      next.add("global");
-      if (activeScopeKey) next.add(activeScopeKey);
-      if (activeSlug) {
-        for (const b of scopeGrouped) {
-          for (const ps of b.byType.values()) {
-            if (ps.some((p) => p.slug === activeSlug)) next.add(b.key);
-          }
-        }
+      for (const k of scopesToExpand) next.add(k);
+      return next;
+    });
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      for (const b of scopeGrouped) {
+        if (!scopesToExpand.has(b.key)) continue;
+        for (const type of b.byType.keys()) next.add(`${b.key}::${type}`);
       }
       return next;
     });
