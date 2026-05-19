@@ -10,6 +10,7 @@ can route to the right UI without coupling to backend enums.
 """
 
 import uuid
+from contextvars import ContextVar
 from typing import Iterable, Optional
 
 from sqlalchemy import select
@@ -67,6 +68,7 @@ async def notify(
         actor_id=actor_id,
     )
     db.add(n)
+    _stage_for_dispatch(db, [n])
     return n
 
 
@@ -100,7 +102,63 @@ async def notify_many(
             db, rid, type=type, subject=subject, target_type=target_type,
             target_id=target_id, body=body, actor_id=actor_id,
         ))
+    # Each `notify` call already staged itself; no extra stage call here.
     return out
+
+
+# ---------------------------------------------------------------------------
+# Dispatch staging — accumulate notifications per request via a contextvar so
+# the dispatcher middleware can fan them out to external channels (email,
+# webhook) AFTER the caller commits. Falls back to a session-keyed dict when
+# called outside a request scope (e.g. arq worker).
+# ---------------------------------------------------------------------------
+
+_REQUEST_STAGED: ContextVar[Optional[list[Notification]]] = ContextVar(
+    "_notif_staged_request", default=None,
+)
+_SESSION_STAGED: dict[int, list[Notification]] = {}
+
+
+def init_request_dispatch_scope() -> None:
+    """Called by the dispatcher middleware at the start of every HTTP request."""
+    _REQUEST_STAGED.set([])
+
+
+def _stage_for_dispatch(db: AsyncSession, notifs: list[Notification]) -> None:
+    if not notifs:
+        return
+    bucket = _REQUEST_STAGED.get()
+    if bucket is not None:
+        bucket.extend(notifs)
+    else:
+        _SESSION_STAGED.setdefault(id(db), []).extend(notifs)
+
+
+def take_pending_dispatch(db: Optional[AsyncSession] = None) -> list[Notification]:
+    """Pop the staged notifications for the current request / session."""
+    bucket = _REQUEST_STAGED.get()
+    if bucket is not None:
+        out = list(bucket)
+        bucket.clear()
+        return out
+    if db is None:
+        return []
+    return _SESSION_STAGED.pop(id(db), [])
+
+
+async def dispatch_pending(db: Optional[AsyncSession] = None) -> None:
+    """Pop staged notifications and run external dispatch.
+
+    Opens a fresh session for external lookups because the request's session
+    may already be closed by the time middleware runs us.
+    """
+    staged = take_pending_dispatch(db)
+    if not staged:
+        return
+    from app.database import async_session_factory
+    from app.services.notification_dispatch import dispatch_external
+    async with async_session_factory() as fresh:
+        await dispatch_external(fresh, staged)
 
 
 # ---------------------------------------------------------------------------

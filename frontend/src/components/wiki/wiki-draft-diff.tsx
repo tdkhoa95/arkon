@@ -10,7 +10,46 @@ type Props = {
   mode?: "unified" | "split";
   /** Show only changed regions with N context lines around them. */
   contextLines?: number;
+  /** When true (default), group hunks under their nearest preceding heading. */
+  groupByHeading?: boolean;
 };
+
+const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+
+type DiffSection = {
+  heading: string | null;
+  level: number;
+  items: LineChange[];
+  hasChanges: boolean;
+};
+
+function groupBySection(changes: LineChange[]): DiffSection[] {
+  const sections: DiffSection[] = [];
+  let current: DiffSection = { heading: null, level: 0, items: [], hasChanges: false };
+  for (const c of changes) {
+    const m = c.kind === "equal" ? c.text.match(HEADING_RE) : null;
+    if (m) {
+      if (current.items.length > 0 || current.heading !== null) {
+        sections.push(current);
+      }
+      current = {
+        heading: m[2].trim(),
+        level: m[1].length,
+        items: [c],
+        hasChanges: false,
+      };
+    } else {
+      if (c.kind !== "equal") current.hasChanges = true;
+      current.items.push(c);
+    }
+  }
+  if (current.items.length > 0) sections.push(current);
+  // If only one section and it has no heading, return as-is — nothing to group.
+  if (sections.length === 1 && sections[0].heading === null) {
+    return sections;
+  }
+  return sections;
+}
 
 type LineChange = {
   kind: "add" | "remove" | "equal";
@@ -94,9 +133,19 @@ function renderWordDiff(oldLine: string, newLine: string): React.ReactNode {
   });
 }
 
-export function WikiDraftDiff({ oldText, newText, mode = "unified", contextLines = 3 }: Props) {
+export function WikiDraftDiff({
+  oldText,
+  newText,
+  mode = "unified",
+  contextLines = 3,
+  groupByHeading = true,
+}: Props) {
   const changes = React.useMemo(() => buildLineChanges(oldText, newText), [oldText, newText]);
   const visible = React.useMemo(() => collapseEqualRuns(changes, contextLines), [changes, contextLines]);
+  const sections = React.useMemo(
+    () => (groupByHeading ? groupBySection(visible) : null),
+    [visible, groupByHeading],
+  );
 
   if (oldText === newText) {
     return (
@@ -108,6 +157,10 @@ export function WikiDraftDiff({ oldText, newText, mode = "unified", contextLines
 
   if (mode === "split") {
     return <SplitDiff oldText={oldText} newText={newText} />;
+  }
+
+  if (sections && sections.length > 1) {
+    return <SectionedDiff sections={sections} />;
   }
 
   return (
@@ -198,6 +251,122 @@ function SplitDiff({ oldText, newText }: { oldText: string; newText: string }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function renderHunkLine(c: LineChange, key: number) {
+  if (c.kind === "equal") {
+    if (c.text.startsWith("···")) {
+      return (
+        <div key={key} className="text-muted-foreground/60 text-center py-1 select-none">
+          {c.text}
+        </div>
+      );
+    }
+    return (
+      <div key={key} className="text-muted-foreground/70 px-2 whitespace-pre-wrap">
+        <span className="text-muted-foreground/40 mr-2 select-none">·</span>
+        {c.text || " "}
+      </div>
+    );
+  }
+  if (c.kind === "add") {
+    return (
+      <div
+        key={key}
+        className="bg-emerald-50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 px-2 whitespace-pre-wrap border-l-2 border-emerald-400"
+      >
+        <span className="text-emerald-600 dark:text-emerald-400 mr-2 select-none">+</span>
+        {c.text || " "}
+      </div>
+    );
+  }
+  return (
+    <div
+      key={key}
+      className="bg-rose-50 dark:bg-rose-950/30 text-rose-900 dark:text-rose-200 px-2 whitespace-pre-wrap border-l-2 border-rose-400"
+    >
+      <span className="text-rose-600 dark:text-rose-400 mr-2 select-none">−</span>
+      {c.text || " "}
+    </div>
+  );
+}
+
+function SectionedDiff({ sections }: { sections: DiffSection[] }) {
+  const [openIdx, setOpenIdx] = React.useState<Set<number>>(() => {
+    const s = new Set<number>();
+    sections.forEach((sec, i) => {
+      if (sec.hasChanges || sec.heading === null) s.add(i);
+    });
+    return s;
+  });
+
+  return (
+    <div className="font-mono text-xs leading-relaxed">
+      {sections.map((sec, i) => {
+        const open = openIdx.has(i);
+        if (sec.heading === null) {
+          return (
+            <div key={i} className="mb-1">
+              {sec.items.map((c, j) => renderHunkLine(c, j))}
+            </div>
+          );
+        }
+        return (
+          <section
+            key={i}
+            className={`mb-2 rounded-md border ${
+              sec.hasChanges
+                ? "border-amber-200/60 dark:border-amber-800/40"
+                : "border-border/60"
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() =>
+                setOpenIdx((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(i)) next.delete(i);
+                  else next.add(i);
+                  return next;
+                })
+              }
+              className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${
+                sec.hasChanges ? "bg-amber-50/50 dark:bg-amber-950/20" : "bg-muted/30"
+              }`}
+            >
+              <span
+                className="material-symbols-outlined text-muted-foreground"
+                style={{ fontSize: 14 }}
+              >
+                {open ? "expand_more" : "chevron_right"}
+              </span>
+              <span
+                className={`flex-1 truncate font-sans font-medium ${
+                  sec.level <= 2 ? "text-sm" : "text-xs"
+                }`}
+              >
+                {"#".repeat(sec.level)} {sec.heading}
+              </span>
+              {sec.hasChanges ? (
+                <span className="text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                  changed
+                </span>
+              ) : (
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  unchanged
+                </span>
+              )}
+            </button>
+            {open && (
+              <div className="py-1">
+                {sec.items.map((c, j) => renderHunkLine(c, j))}
+              </div>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }

@@ -110,6 +110,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# --- Notification dispatch middleware ---
+# Initialise the per-request notification staging bucket at the start of every
+# HTTP request; flush to external channels (email, webhook) after the response
+# is built. Fire-and-forget — errors are swallowed by the dispatcher.
+
+@app.middleware("http")
+async def _notification_dispatch_mw(request, call_next):
+    from app.services import notification_service
+    notification_service.init_request_dispatch_scope()
+    response = await call_next(request)
+    try:
+        await notification_service.dispatch_pending()
+    except Exception as e:  # pragma: no cover — defensive, dispatcher already catches
+        logger.warning(f"Notification dispatch middleware failed: {e}")
+    return response
+
 # --- Mount MCP Server ---
 # Claude Desktop connects to: https://your-server/mcp
 app.mount("/mcp", mcp_http_app)

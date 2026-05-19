@@ -42,8 +42,19 @@ export default function WikiIndexPage() {
   const [loading, setLoading] = React.useState(true);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [prefillTitle, setPrefillTitle] = React.useState("");
   const [activeTab, setActiveTab] = React.useState<string>("all");
   const [scopes, setScopes] = React.useState<WikiScope[]>([]);
+
+  // `?new=1&title=<gap topic>` deep-link from the knowledge-gaps tab in
+  // /admin/statistics — auto-open the create dialog pre-filled with the
+  // gap's normalized topic.
+  React.useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      setPrefillTitle(searchParams.get("title") || "");
+      setCreateOpen(true);
+    }
+  }, [searchParams]);
 
   // Derive selected scope from URL params; fall back to the matching entry in
   // `scopes` once it loads so we can show the proper display name.
@@ -192,6 +203,16 @@ export default function WikiIndexPage() {
                 <span className="material-symbols-outlined text-base">add</span>
                 {createMode === "direct" ? "New page" : "Propose page"}
               </Button>
+            )}
+            {(isAdmin || hasPermission("wiki:write:all") || hasPermission("wiki:write:own_dept")) && (
+              <Link
+                href="/wiki/queue"
+                className="inline-flex h-8 items-center gap-1.5 px-2.5 rounded-lg text-sm font-medium border border-border bg-background hover:bg-muted transition-colors"
+                title="Drafts awaiting review"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 16 }}>inbox</span>
+                Queue
+              </Link>
             )}
             <Link
               href="/wiki/graph"
@@ -364,11 +385,15 @@ export default function WikiIndexPage() {
           open={createOpen}
           onOpenChange={(o) => {
             setCreateOpen(o);
-            if (!o) setDialogScope(null);
+            if (!o) {
+              setDialogScope(null);
+              setPrefillTitle("");
+            }
           }}
           mode={dialogMode}
           defaultScope={dialogTargetScope}
           scopes={scopes}
+          defaultTitle={prefillTitle}
         />
       )}
     </>

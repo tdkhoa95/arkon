@@ -28,6 +28,8 @@ type Props = {
   defaultScope: WikiScope;
   /** Scopes the user is allowed to write to. */
   scopes: WikiScope[];
+  /** Optional initial title — used when opening from a knowledge-gap suggestion. */
+  defaultTitle?: string;
 };
 
 const PAGE_TYPES = ["entity", "concept", "topic", "source"] as const;
@@ -48,9 +50,10 @@ export function WikiCreatePageDialog({
   mode,
   defaultScope,
   scopes,
+  defaultTitle = "",
 }: Props) {
   const router = useRouter();
-  const [title, setTitle] = React.useState("");
+  const [title, setTitle] = React.useState(defaultTitle);
   const [slug, setSlug] = React.useState("");
   const [slugTouched, setSlugTouched] = React.useState(false);
   const [pageType, setPageType] = React.useState<(typeof PAGE_TYPES)[number]>("concept");
@@ -70,7 +73,7 @@ export function WikiCreatePageDialog({
   // Reset on open.
   React.useEffect(() => {
     if (!open) return;
-    setTitle("");
+    setTitle(defaultTitle);
     setSlug("");
     setSlugTouched(false);
     setPageType("concept");
@@ -78,7 +81,7 @@ export function WikiCreatePageDialog({
     setContent("");
     setNote("");
     setError(null);
-  }, [open, defaultScope]);
+  }, [open, defaultScope, defaultTitle]);
 
   const submit = async () => {
     if (!title.trim() || !slug.trim() || !content.trim()) {

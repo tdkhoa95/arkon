@@ -5,6 +5,82 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.0] — 2026-05-19
+
+Scaling the contribute/review workflow: review queue + bulk approve, author
+trust signals, expertise-based reviewer routing, outline-aware diff,
+gap-to-page deep-link, and external notification channels (email + webhook).
+No schema migration — all features build on existing tables.
+
+### Added
+
+- **Review queue page (`/wiki/queue`)** listing every draft the current
+  user can review across scopes, with status filter (pending /
+  needs_revision / approved / rejected). Supports multi-select +
+  bulk-approve; per-draft AI status chip, author trust chip, revision
+  round, and submission age. Header button on `/wiki` deep-links here.
+- **Bulk approve endpoint** `POST /wiki/drafts/bulk-approve` — processes
+  each draft independently (per-item conflict / permission / not-found
+  handling), commits the batch, and emits notifications for the
+  approved set. Result payload reports approved / skipped / errored
+  counts plus per-item messages.
+- **Author trust signals** — `DraftResponse.author_stats` now exposes
+  `{approved, rejected, needs_revision, total_reviewed, accuracy}` over
+  the author's lifetime drafts. Banner and queue both render a chip
+  coloured by tier (high / ok / low) with hover-tooltip detail.
+- **Expertise-based reviewer suggestions** —
+  `DraftResponse.suggested_reviewers` lists up to 3 employees ranked by
+  past edit / approval activity on pages with overlapping
+  `knowledge_type_slugs` OR in the same scope. Banner surfaces them so
+  reviewers know who normally handles a topic.
+- **Outline-aware diff view** — `WikiDraftDiff` groups hunks under their
+  nearest preceding heading. Unchanged sections collapse automatically;
+  changed sections stay open and are flagged in the section header.
+  Pre-heading content (intro / frontmatter) renders ungrouped.
+- **Knowledge-gap deep link** — the `/admin/statistics` Gaps tab's
+  "Create draft →" link routes to `/wiki?new=1&title=<topic>`, which now
+  auto-opens the create dialog with the gap topic pre-filled in the
+  title field.
+- **External notification channels (permissive)**
+  - **Email (SMTP)**: per-recipient delivery; multiple notifications in
+    the same request are batched into one email. Configured via
+    `smtp_enabled / smtp_host / smtp_port / smtp_username / smtp_password
+    / smtp_from / smtp_use_tls` keys in `app_config`. Sensitive keys
+    (`smtp_password`) are encrypted at rest via the existing
+    `ConfigService` Fernet layer.
+  - **Webhook (generic JSON POST)**: single endpoint receives
+    `{events: [{id, type, subject, body, target_type, target_id,
+    recipient_id, actor_id, created_at}]}`. Optional HMAC secret signs
+    the body in `X-Arkon-Signature: sha256=<hex>`.
+  - Both channels run **after request commit** via a FastAPI middleware
+    that drains a per-request notification staging buffer; errors are
+    logged and swallowed so the contribution flow never breaks.
+  - New settings panel **Notification channels** in `/settings` lets
+    admins toggle each channel, edit credentials, and save without
+    leaving the page.
+- New runtime dependency: `aiosmtplib>=3.0.0` for async SMTP.
+
+### Changed
+
+- `_can_review_draft` is now the canonical reviewer-permission check;
+  bulk-approve and the new queue both route through it so create drafts
+  and edit drafts behave the same way.
+- `notification_service.notify` / `notify_many` automatically stage
+  every created `Notification` on the current request's contextvar; no
+  per-route changes required for the new dispatch path.
+- `_is_sensitive(key)` in `ConfigService` recognises `smtp_password` and
+  `webhook_secret` so they round-trip encrypted.
+
+### Deferred to 0.8
+
+- Per-event channel routing (e.g. only ship `approved` events to email,
+  send everything to the webhook).
+- Auto-fast-track for high-trust authors (auto-approve after N hours
+  with no review). Trust signals exist; the automation does not.
+- Slack/Teams-native adapters (current webhook is intentionally generic).
+
+---
+
 ## [0.6.0] — 2026-05-19
 
 Contribute / review vision pass. Adds an AI pre-review layer that annotates

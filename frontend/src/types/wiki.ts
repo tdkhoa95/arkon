@@ -86,6 +86,21 @@ export type DraftSuggestedMetadata = {
   scope_id?: string | null;
 };
 
+export type AuthorStats = {
+  approved: number;
+  rejected: number;
+  needs_revision: number;
+  total_reviewed: number;
+  accuracy: number;
+};
+
+export type SuggestedReviewer = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  score: number;
+};
+
 export type DraftResponse = {
   id: string;
   page_id: string | null;
@@ -98,6 +113,8 @@ export type DraftResponse = {
   suggested_metadata: DraftSuggestedMetadata | null;
   author_id: string | null;
   author_name: string | null;
+  author_stats: AuthorStats | null;
+  suggested_reviewers: SuggestedReviewer[];
   content_md: string;
   note: string | null;
   status: DraftStatus | string;

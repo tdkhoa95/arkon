@@ -199,6 +199,34 @@ export function WikiDraftBanner({
                 conflict — page advanced past v{draft.base_version ?? "?"} to v{draft.page_version}
               </span>
             )}
+            {draft.author_stats && draft.author_stats.total_reviewed > 0 && (() => {
+              const s = draft.author_stats;
+              const pct = Math.round(s.accuracy * 100);
+              // Three trust tiers based on sample size + accuracy.
+              const tier =
+                s.total_reviewed >= 10 && s.accuracy >= 0.9
+                  ? "high"
+                  : s.total_reviewed >= 3 && s.accuracy >= 0.7
+                  ? "ok"
+                  : "low";
+              const cls =
+                tier === "high"
+                  ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-200"
+                  : tier === "ok"
+                  ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-200"
+                  : "bg-muted text-muted-foreground";
+              return (
+                <span
+                  className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded tabular-nums ${cls}`}
+                  title={
+                    `${s.approved} approved · ${s.rejected} rejected` +
+                    (s.needs_revision ? ` · ${s.needs_revision} returned` : "")
+                  }
+                >
+                  {s.approved}✓ · {pct}%
+                </span>
+              );
+            })()}
           </p>
           {draft.note && (
             <p className={`text-xs ${palette.muted} truncate mt-0.5`}>&ldquo;{draft.note}&rdquo;</p>
@@ -206,6 +234,14 @@ export function WikiDraftBanner({
           {isNeedsRevision && draft.last_returned_note && (
             <p className={`text-xs ${palette.muted} mt-1`}>
               <span className="font-medium">Reviewer asked:</span> {draft.last_returned_note}
+            </p>
+          )}
+          {draft.suggested_reviewers && draft.suggested_reviewers.length > 0 && (
+            <p className={`text-xs ${palette.muted} mt-1`}>
+              <span className="font-medium">Suggested reviewers:</span>{" "}
+              {draft.suggested_reviewers
+                .map((r) => `${r.name || r.email || "?"} (${r.score})`)
+                .join(", ")}
             </p>
           )}
         </div>

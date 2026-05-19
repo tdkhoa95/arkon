@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -107,6 +107,26 @@ class ProposeCreateRequest(BaseModel):
         return v
 
 
+class BulkApproveRequest(BaseModel):
+    draft_ids: list[uuid.UUID]
+    allow_conflict: bool = False
+    reviewer_note: Optional[str] = None  # applied to every draft
+
+
+class BulkApproveItemResult(BaseModel):
+    draft_id: uuid.UUID
+    status: str  # "approved" | "skipped" | "error"
+    message: Optional[str] = None
+    page_version: Optional[int] = None
+
+
+class BulkApproveResponse(BaseModel):
+    results: list[BulkApproveItemResult]
+    approved: int
+    skipped: int
+    errored: int
+
+
 class ApproveDraftRequest(BaseModel):
     reviewer_note: Optional[str] = None
     edited_content_md: Optional[str] = None
@@ -165,6 +185,23 @@ class DraftRoundResponse(BaseModel):
     submitted_at: str
 
 
+class AuthorStats(BaseModel):
+    """Lightweight author reputation surfaced alongside each draft."""
+    approved: int = 0
+    rejected: int = 0
+    needs_revision: int = 0
+    total_reviewed: int = 0
+    accuracy: float = 0.0  # approved / (approved + rejected); 0..1
+
+
+class SuggestedReviewer(BaseModel):
+    """Reviewer the system would route this draft to based on past activity."""
+    id: uuid.UUID
+    name: Optional[str] = None
+    email: Optional[str] = None
+    score: int  # number of past approvals on overlapping pages
+
+
 class DraftResponse(BaseModel):
     id: uuid.UUID
     page_id: Optional[uuid.UUID] = None
@@ -177,6 +214,8 @@ class DraftResponse(BaseModel):
     suggested_metadata: Optional[dict] = None
     author_id: Optional[uuid.UUID]
     author_name: Optional[str]
+    author_stats: Optional[AuthorStats] = None
+    suggested_reviewers: list[SuggestedReviewer] = []
     content_md: str
     note: Optional[str]
     status: str
@@ -292,6 +331,114 @@ async def _load_draft(db: AsyncSession, draft_id: str) -> WikiPageDraft:
     return draft
 
 
+async def _suggested_reviewers(
+    db: AsyncSession,
+    draft: WikiPageDraft,
+    limit: int = 3,
+) -> list[SuggestedReviewer]:
+    """Rank candidate reviewers by past activity on overlapping pages.
+
+    Signal: count `wiki_page_revisions` rows (change_type in editor_edit /
+    draft_approved / draft_approved_create) where the page either:
+    - shares at least one knowledge_type_slug with this draft's page, OR
+    - belongs to the same scope (project/department/global).
+
+    Falls back to recent global reviewers if no overlap exists. Excludes
+    the draft's own author. Top `limit` returned with their approval count.
+    """
+    from app.database.models import WikiPageRevision
+
+    # Resolve the page metadata we'll use to define "overlap".
+    page = await db.get(WikiPage, draft.page_id) if draft.page_id else None
+    if page is None:
+        # Create draft: use suggested metadata.
+        sm = draft.suggested_metadata or {}
+        kt_slugs = sm.get("knowledge_type_slugs") or []
+        scope_type = sm.get("scope_type") or "global"
+        scope_id_raw = sm.get("scope_id")
+        try:
+            scope_id = uuid.UUID(scope_id_raw) if isinstance(scope_id_raw, str) else scope_id_raw
+        except (ValueError, TypeError):
+            scope_id = None
+    else:
+        kt_slugs = page.knowledge_type_slugs or []
+        scope_type = page.scope_type or "global"
+        scope_id = page.scope_id
+
+    # Build the OR-filter that defines "similar pages".
+    from sqlalchemy import or_
+    clauses = []
+    if kt_slugs:
+        clauses.append(WikiPage.knowledge_type_slugs.overlap(kt_slugs))  # type: ignore[arg-type]
+    clauses.append(
+        and_(WikiPage.scope_type == scope_type, WikiPage.scope_id == scope_id)
+        if scope_id is not None
+        else and_(WikiPage.scope_type == scope_type, WikiPage.scope_id.is_(None))
+    )
+    similar_pages_stmt = select(WikiPage.id).where(or_(*clauses))
+
+    # Rank by approval count across those pages.
+    rows = (await db.execute(
+        select(
+            WikiPageRevision.changed_by_id,
+            func.count(WikiPageRevision.id).label("cnt"),
+        )
+        .where(
+            WikiPageRevision.changed_by_id.is_not(None),
+            WikiPageRevision.change_type.in_(
+                ["editor_edit", "draft_approved", "draft_approved_create", "rollback"]
+            ),
+            WikiPageRevision.page_id.in_(similar_pages_stmt),
+        )
+        .group_by(WikiPageRevision.changed_by_id)
+        .order_by(func.count(WikiPageRevision.id).desc())
+        .limit(limit + 2)  # +2 so we can drop author + self if needed
+    )).all()
+
+    out: list[SuggestedReviewer] = []
+    for row in rows:
+        reviewer_id, count = row[0], int(row[1])
+        if draft.author_id is not None and reviewer_id == draft.author_id:
+            continue  # author can't review own draft
+        emp = await db.get(Employee, reviewer_id)
+        if not emp:
+            continue
+        out.append(SuggestedReviewer(
+            id=emp.id, name=emp.name, email=emp.email, score=count,
+        ))
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _author_stats(db: AsyncSession, author_id: Optional[uuid.UUID]) -> Optional[AuthorStats]:
+    """Count this author's historical drafts grouped by terminal status.
+
+    Returns None for anonymous / unknown authors. Cheap query — one
+    aggregated SELECT against wiki_page_drafts indexed by author_id.
+    """
+    if not author_id:
+        return None
+    rows = (await db.execute(
+        select(WikiPageDraft.status, func.count(WikiPageDraft.id))
+        .where(WikiPageDraft.author_id == author_id)
+        .group_by(WikiPageDraft.status)
+    )).all()
+    counts = {row[0]: int(row[1]) for row in rows}
+    approved = counts.get("approved", 0)
+    rejected = counts.get("rejected", 0)
+    needs_revision = counts.get("needs_revision", 0)
+    total = approved + rejected
+    accuracy = (approved / total) if total > 0 else 0.0
+    return AuthorStats(
+        approved=approved,
+        rejected=rejected,
+        needs_revision=needs_revision,
+        total_reviewed=total,
+        accuracy=round(accuracy, 3),
+    )
+
+
 async def _draft_response(db: AsyncSession, draft: WikiPageDraft) -> DraftResponse:
     page = await db.get(WikiPage, draft.page_id) if draft.page_id else None
     author = await db.get(Employee, draft.author_id) if draft.author_id else None
@@ -320,6 +467,12 @@ async def _draft_response(db: AsyncSession, draft: WikiPageDraft) -> DraftRespon
         suggested_metadata=suggested or None,
         author_id=draft.author_id,
         author_name=author.name if author else None,
+        author_stats=await _author_stats(db, draft.author_id),
+        suggested_reviewers=(
+            await _suggested_reviewers(db, draft)
+            if draft.status in ("pending", "needs_revision")
+            else []
+        ),
         content_md=draft.content_md,
         note=draft.note,
         status=draft.status,
@@ -787,3 +940,118 @@ async def propose_create_page(
     await db.commit()
     await db.refresh(draft)
     return await _draft_response(db, draft)
+
+
+# ---------------------------------------------------------------------------
+# Bulk approve — for the reviewer queue page
+# ---------------------------------------------------------------------------
+
+@router.post("/wiki/drafts/bulk-approve", response_model=BulkApproveResponse)
+async def bulk_approve_drafts(
+    body: BulkApproveRequest,
+    db: AsyncSession = Depends(get_db),
+    user: Employee = Depends(get_current_user),
+):
+    """Approve many pending drafts in one request.
+
+    Each draft is processed independently:
+    - skipped when the draft is no longer pending or the user lacks permission
+    - errored on conflict / domain validation failures (note returned)
+    - approved otherwise
+
+    The whole operation is committed at the end so partial successes persist
+    even if a single draft errors.
+    """
+    results: list[BulkApproveItemResult] = []
+    approved_count = 0
+    skipped_count = 0
+    errored_count = 0
+
+    for did in body.draft_ids:
+        draft = await db.get(WikiPageDraft, did)
+        if not draft:
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="error", message="Draft not found",
+            ))
+            errored_count += 1
+            continue
+        if draft.status != "pending":
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="skipped",
+                message=f"Draft is already {draft.status}",
+            ))
+            skipped_count += 1
+            continue
+        if not await _can_review_draft(db, user, draft):
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="skipped",
+                message="Insufficient permission",
+            ))
+            skipped_count += 1
+            continue
+        if user.role != "admin" and draft.author_id == user.id:
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="skipped",
+                message="Cannot approve your own draft",
+            ))
+            skipped_count += 1
+            continue
+
+        try:
+            page = await wiki_service.approve_draft(
+                db, draft, user.id,
+                reviewer_note=body.reviewer_note,
+                allow_conflict=body.allow_conflict,
+            )
+        except wiki_service.DraftConflictError as e:
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="error",
+                message=str(e),
+            ))
+            errored_count += 1
+            continue
+        except wiki_service.CreateDraftSlugConflict as e:
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="error",
+                message=str(e),
+            ))
+            errored_count += 1
+            continue
+        except (ValueError, Exception) as e:
+            results.append(BulkApproveItemResult(
+                draft_id=did, status="error",
+                message=str(e),
+            ))
+            errored_count += 1
+            continue
+
+        await log_audit(
+            db, user, "update", "wiki_draft", str(draft.id),
+            reason=f"bulk-approved: {page.slug}",
+        )
+        scope_type = page.scope_type or "global"
+        scope_id = page.scope_id
+        await wiki_service.regenerate_index(db, scope_type=scope_type, scope_id=scope_id)
+        await wiki_service.append_log(
+            db,
+            f"Bulk-approved draft for: {page.title} ({page.slug}) -> v{page.version} by {user.name or user.email}",
+            scope_type=scope_type, scope_id=scope_id,
+        )
+        draft.page = page
+        await contribution_service.notify_approved(
+            db, wiki_draft_adapter, draft, user,
+            version_label=f"v{page.version}",
+        )
+        results.append(BulkApproveItemResult(
+            draft_id=did, status="approved",
+            page_version=page.version,
+        ))
+        approved_count += 1
+
+    await db.commit()
+    return BulkApproveResponse(
+        results=results,
+        approved=approved_count,
+        skipped=skipped_count,
+        errored=errored_count,
+    )
