@@ -33,6 +33,7 @@ PUBLIC_TOOLS = {
     "get_source_outline",
     "get_source_pages",
     "list_sources",
+    "search_source_content",
     "list_knowledge_types",
     "get_knowledge_type_docs",
 }

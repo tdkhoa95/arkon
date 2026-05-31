@@ -309,6 +309,7 @@ async def list_pages(
     page_type: Optional[str] = None,
     knowledge_type_slug: Optional[str] = None,
     allowed_kt_slugs: Optional[list[str]] = None,
+    query: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     scope_type: str = "global",
@@ -350,6 +351,14 @@ async def list_pages(
             or_(
                 WikiPage.knowledge_type_slugs.overlap(allowed_kt_slugs),
                 func.cardinality(WikiPage.knowledge_type_slugs) == 0,
+            )
+        )
+    if query:
+        stmt = stmt.where(
+            or_(
+                WikiPage.title.ilike(f"%{query}%"),
+                WikiPage.slug.ilike(f"%{query}%"),
+                WikiPage.content_md.ilike(f"%{query}%"),
             )
         )
     result = await session.execute(stmt)

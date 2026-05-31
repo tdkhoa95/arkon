@@ -17,8 +17,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # SQL commands to delete legacy 'source/' wiki pages, drafts, and revisions
-    op.execute("DELETE FROM wiki_page_revisions WHERE slug LIKE 'source/%'")
-    op.execute("DELETE FROM wiki_page_drafts WHERE page_slug LIKE 'source/%'")
+    # 1. Delete revisions whose parent page has a source/ slug
+    op.execute(
+        "DELETE FROM wiki_page_revisions WHERE page_id IN (SELECT id FROM wiki_pages WHERE slug LIKE 'source/%')"
+    )
+    # 2. Delete drafts referencing a source/ page or suggesting a source/ slug
+    op.execute(
+        "DELETE FROM wiki_page_drafts WHERE page_id IN (SELECT id FROM wiki_pages WHERE slug LIKE 'source/%') "
+        "OR (suggested_metadata->>'slug' LIKE 'source/%')"
+    )
+    # 3. Delete the legacy wiki pages
     op.execute("DELETE FROM wiki_pages WHERE slug LIKE 'source/%'")
 
 

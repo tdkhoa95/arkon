@@ -463,15 +463,17 @@ def register_tools(mcp: FastMCP):
     async def list_wiki_pages(
         page_type: Optional[str] = None,
         knowledge_type: Optional[str] = None,
+        query: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> str:
         """
-        Browse wiki pages with filters. Reserved pages (`_index`, `_log`) are excluded.
+        Browse wiki pages with filters and text search. Reserved pages (`_index`, `_log`) are excluded.
 
         Args:
             page_type: Filter by type — "entity", "concept", "topic", "source".
             knowledge_type: Filter by KnowledgeType slug.
+            query: Optional substring search query (case-insensitive) matched against title, slug, and content.
             limit: Max pages to return (default: 50).
             offset: Number of pages to skip for pagination (default: 0).
 
@@ -496,6 +498,7 @@ def register_tools(mcp: FastMCP):
                 page_type=page_type,
                 knowledge_type_slug=knowledge_type,
                 allowed_kt_slugs=identity.allowed_knowledge_types,
+                query=query,
                 limit=limit,
                 offset=offset,
                 department_ids=identity.department_ids,
@@ -688,6 +691,108 @@ def register_tools(mcp: FastMCP):
             parts.append(f"--- page {s['page']} ---\n{s['content']}")
         return "\n\n".join(parts)
 
+    @kb_tool(mcp, requires=ANY_AUTHENTICATED)
+    @logged_tool("search_source_content", query_arg="query")
+    async def search_source_content(
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> str:
+        """
+        Search inside the full text of raw source documents.
+
+        Use this tool when the wiki summarizes or paraphases too much and you
+        need to search across all raw text documents to locate specific terms,
+        clauses, product codes, or quotes.
+
+        Args:
+            query: Exact keyword or phrase to search for in document contents.
+            limit: Max sources to return matches for (default: 10).
+            offset: Number of sources to skip for pagination (default: 0).
+
+        Returns:
+            Matched source documents, their matching page numbers, and highlighted context snippets.
+        """
+        import re
+        from sqlalchemy import select
+
+        from app.database import async_session_factory
+        from app.database.models import Source
+        from app.services.mcp_auth_service import apply_scope_filter
+
+        identity, err = await _get_identity()
+        if err:
+            return err
+        assert identity is not None
+
+        query = query.strip()
+        if not query:
+            return "Error: query parameter must not be empty."
+
+        async with async_session_factory() as session:
+            stmt = select(Source).where(
+                Source.status == "ready",
+                Source.full_text.ilike(f"%{query}%")
+            )
+            stmt = apply_scope_filter(stmt, identity).offset(offset).limit(limit)
+            sources = (await session.execute(stmt)).scalars().all()
+
+        if not sources:
+            return f"No document content matches found for: \"{query}\""
+
+        try:
+            pattern = re.compile(re.escape(query), re.IGNORECASE)
+        except Exception:
+            pattern = None
+
+        lines = [f"**Content search results for: \"{query}\"**\n"]
+        for s in sources:
+            text = s.full_text or ""
+            offsets = s.page_offsets or []
+            title = s.title or s.file_name or s.url or "Untitled Source"
+
+            matches_in_doc = []
+            if pattern:
+                for match in pattern.finditer(text):
+                    start_char = match.start()
+                    page_num = 1
+                    if offsets:
+                        for idx, off in enumerate(offsets):
+                            if start_char < off:
+                                page_num = idx
+                                break
+                            page_num = len(offsets)
+
+                    start_window = max(0, start_char - 80)
+                    end_window = min(len(text), match.end() + 80)
+                    snippet = text[start_window:end_window].strip().replace("\n", " ")
+                    if start_window > 0:
+                        snippet = "..." + snippet
+                    if end_window < len(text):
+                        snippet = snippet + "..."
+
+                    # Highlight the query using bold Markdown
+                    highlighted_snippet = re.sub(
+                        re.escape(query),
+                        lambda m: f"**{m.group(0)}**",
+                        snippet,
+                        flags=re.IGNORECASE
+                    )
+
+                    matches_in_doc.append((page_num, highlighted_snippet))
+                    if len(matches_in_doc) >= 3:
+                        break
+
+            lines.append(f"### {title} (ID: `{s.id}`)")
+            if matches_in_doc:
+                for p_num, snip in matches_in_doc:
+                    lines.append(f"- **Page {p_num}**: {snip}")
+            else:
+                lines.append("- Keyword matches found in full text.")
+            lines.append("")
+
+        return "\n".join(lines)
+
     # =========================================================================
     # Source/Type browsing
     # =========================================================================
@@ -697,15 +802,17 @@ def register_tools(mcp: FastMCP):
     async def list_sources(
         status: str = "ready",
         knowledge_type: Optional[str] = None,
+        query: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> str:
         """
-        List raw source documents with optional filters.
+        List raw source documents with optional filters and text search.
 
         Args:
             status: "ready", "processing", "error", or "all".
             knowledge_type: Filter by KnowledgeType slug.
+            query: Optional text query (case-insensitive) to search in title, filename, or URL.
             limit: Max sources to return (default: 20).
             offset: Number of sources to skip for pagination (default: 0).
         """
@@ -735,6 +842,12 @@ def register_tools(mcp: FastMCP):
                 )).scalar()
                 if kt_id:
                     stmt = stmt.where(Source.knowledge_type_id == kt_id)
+            if query:
+                stmt = stmt.where(
+                    Source.title.ilike(f"%{query}%") |
+                    Source.file_name.ilike(f"%{query}%") |
+                    Source.url.ilike(f"%{query}%")
+                )
             stmt = apply_scope_filter(stmt, identity).offset(offset).limit(limit)
             sources = (await session.execute(stmt)).scalars().all()
 
@@ -742,6 +855,8 @@ def register_tools(mcp: FastMCP):
             msg = "No documents found"
             if knowledge_type:
                 msg += f" of type '{knowledge_type}'"
+            if query:
+                msg += f" matching '{query}'"
             return msg + "."
 
         from collections import defaultdict
