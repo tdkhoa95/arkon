@@ -1124,54 +1124,20 @@ async def regenerate_hot_cache(
     )
     contradiction_rows = (await session.execute(contradiction_stmt)).all()
 
-    # 4. Format context for LLM
+    # 4. Format context natively (Zero LLM cost fallback)
     recent_prose = "\n".join(f"- [[{r.slug}|{r.title}]] (Trạng thái: {r.status}, Cập nhật: {r.updated_at.strftime('%Y-%m-%d %H:%M') if r.updated_at else 'N/A'})" for r in recent_rows) if recent_rows else "- Không có cập nhật gần đây."
-    seed_prose = "\n".join(f"- [[{r.slug}|{r.title}]]" for r in seed_rows) if seed_rows else "- Không có trang seed nào."
+    seed_prose = "\n".join(f"- [[{r.slug}|{r.title}]]" for r in seed_rows) if seed_rows else "- Không có trang sơ khởi nào."
     
     contradiction_items = []
     for r in contradiction_rows:
-        # Extract the contradiction callout text if possible
         match = re.search(r">\s*\[!contradiction]\s*(.*?)(?=\n[^>]|\n\n|$)", r.content_md, re.DOTALL | re.IGNORECASE)
         callout_desc = match.group(1).replace(">", "").strip() if match else "Có mâu thuẫn tri thức được phát hiện."
         contradiction_items.append(f"- [[{r.slug}|{r.title}]]: {callout_desc}")
     contradiction_prose = "\n".join(contradiction_items) if contradiction_items else "- Không phát hiện mâu thuẫn tri thức nào."
 
-    prompt = f"""Bạn là một chuyên gia quản lý tri thức doanh nghiệp. Nhiệm vụ của bạn là tổng hợp một bản tin tóm tắt tri thức nóng ("Hot Cache Briefing") khoảng 400-500 từ dựa trên trạng thái hiện tại của Wiki doanh nghiệp.
+    new_md = f"""# ⚡ Arkon Briefing Tri Thức Nóng
 
-Dưới đây là dữ liệu thô về trạng thái Wiki hiện tại:
-
-### 1. Tri thức cập nhật gần đây:
-{recent_prose}
-
-### 2. Các trang Tri thức sơ khởi (Seed Pages - cần bổ sung thông tin):
-{seed_prose}
-
-### 3. Mâu thuẫn tri thức đang tồn tại (Cực kỳ quan trọng, cần giải quyết):
-{contradiction_prose}
-
-Yêu cầu trình bày:
-1. Tiêu đề chính: "# ⚡ Arkon Briefing Tri Thức Nóng"
-2. Một đoạn tóm tắt tổng quan ngắn gọn (Prose) về hướng phát triển tri thức gần đây của doanh nghiệp.
-3. Phần "Mâu thuẫn tri thức nổi bật": Nhấn mạnh các mâu thuẫn tri thức đang xảy ra và kêu gọi hành động cụ thể để giải quyết chúng. Hãy viết các wikilink dưới dạng [[slug|tiêu đề]] để liên kết.
-4. Phần "Trọng tâm hoàn thiện tri thức": Liệt kê một vài trang seed quan trọng nhất và hướng đi để nâng cấp độ trưởng thành (maturity) của chúng.
-5. Phong cách viết: Nghiêm túc, súc tích, đậm chất R&D và chuyên nghiệp cao. Dùng tiếng Việt hoàn toàn.
-"""
-
-    new_md = ""
-    try:
-        registry = ProviderRegistry(session)
-        llm = await registry.get_llm()
-        new_md = await llm.generate(
-            prompt=prompt,
-            system="Bạn là trợ lý AI Antigravity chịu trách nhiệm tổng hợp báo cáo tri thức cho hệ thống Arkon.",
-            max_tokens=1000,
-            temperature=0.3,
-        )
-    except Exception as exc:
-        logger.warning(f"Failed to generate hot cache briefing via LLM: {exc}. Using fallback markdown.")
-        new_md = f"""# ⚡ Arkon Briefing Tri Thức Nóng
-
-*(Không thể tạo bản tin tự động qua LLM tại thời điểm này. Dưới đây là tóm tắt hệ thống)*
+*(Bản tin trạng thái tri thức tự động của hệ thống)*
 
 ## ⚠️ Mâu thuẫn tri thức đang tồn tại
 {contradiction_prose}
