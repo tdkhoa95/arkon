@@ -30,7 +30,7 @@ from app.services.permission_engine import (
     has_any_permission,
     workspace_role_can,
 )
-from app.routers.wiki_drafts import DraftResponse, _to_response
+from app.routers.wiki_drafts import DraftResponse, _draft_response
 
 router = APIRouter()
 
@@ -242,7 +242,7 @@ async def get_branch(
 
     draft_responses = []
     for d in drafts:
-        draft_responses.append(await _to_response(db, d))
+        draft_responses.append(await _draft_response(db, d))
 
     return BranchDetailResponse(**base.model_dump(), drafts=draft_responses)
 
@@ -447,4 +447,4 @@ async def rebase_draft(
     await db.refresh(draft)
 
     await log_audit(db, user, "rebase_draft", "wiki_page_draft", str(draft.id))
-    return await _to_response(db, draft)
+    return await _draft_response(db, draft)
