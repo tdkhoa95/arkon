@@ -143,12 +143,6 @@ export default function WikiPageViewer() {
     }
   }, [user, isScoped, scopeType, scopeId]);
 
-  React.useEffect(() => {
-    if (user && (canPropose || canEdit)) {
-      loadBranches();
-    }
-  }, [user, canPropose, canEdit, loadBranches]);
-
   // Pending drafts (for editors/admins)
   const [drafts, setDrafts] = React.useState<DraftResponse[]>([]);
 
@@ -190,6 +184,12 @@ export default function WikiPageViewer() {
 
   // Can review drafts
   const canReview: boolean = canEdit;
+
+  React.useEffect(() => {
+    if (user && (canPropose || canEdit)) {
+      loadBranches();
+    }
+  }, [user, canPropose, canEdit, loadBranches]);
 
   // Permission helper for the create-page action — mirrors the helper on
   // /wiki landing so the dialog mode follows whatever scope is chosen.

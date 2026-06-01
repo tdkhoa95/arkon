@@ -85,7 +85,7 @@ export default function WikiBranchRebasePage() {
   }, [selectedDraft]);
 
   const handleResolve = async () => {
-    if (!selectedBranch || !selectedDraft) return;
+    if (!branch || !selectedDraft) return;
     setBusy(true);
     setError(null);
     try {
